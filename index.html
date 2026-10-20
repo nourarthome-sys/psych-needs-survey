@@ -106,7 +106,7 @@ table.list th{color:var(--muted);font-weight:700;font-size:13px}
       </div>
       <div>
         <label class="f" for="fAge">السن <span class="req">*</span></label>
-        <input type="number" id="fAge" min="5" max="100" inputmode="numeric" placeholder="مثال: 28">
+        <input type="text" id="fAge" inputmode="numeric" maxlength="3" autocomplete="off" placeholder="مثال: 28">
       </div>
       <div>
         <label class="f" for="fPhone">رقم الموبايل <span class="req">*</span></label>
@@ -420,14 +420,31 @@ const SEC_LABEL = {
 /* ===================== شاشة البيانات ===================== */
 $("centerName").textContent = CONFIG.CENTER_NAME;
 document.title = CONFIG.CENTER_NAME;
+// تحويل الأرقام العربية (٠١٢٣) والفارسية (۰۱۲۳) لأرقام إنجليزية أثناء الكتابة
+function toLatinDigits(s){
+  return String(s)
+    .replace(/[٠-٩]/g, c => c.charCodeAt(0) - 0x0660)
+    .replace(/[۰-۹]/g, c => c.charCodeAt(0) - 0x06F0);
+}
+function normalizeField(el, allowed){
+  const before = el.value;
+  const after = toLatinDigits(before).replace(allowed, "");
+  if (after !== before) {
+    const pos = el.selectionStart;
+    el.value = after;
+    try { const p = Math.max(0, (pos ?? after.length) - (before.length - after.length)); el.setSelectionRange(p, p); } catch(e){}
+  }
+}
+$("fPhone").addEventListener("input", () => normalizeField($("fPhone"), /[^\d+\s-]/g));
 $("fAge").addEventListener("input", () => {
+  normalizeField($("fAge"), /\D/g);
   const a = parseInt($("fAge").value, 10);
   $("parentBox").classList.toggle("hidden", !(a >= 1 && a < 12));
 });
 $("btnStart").addEventListener("click", () => {
   const name = $("fName").value.trim();
-  const age = parseInt($("fAge").value, 10);
-  const phone = $("fPhone").value.trim();
+  const age = parseInt(toLatinDigits($("fAge").value), 10);
+  const phone = toLatinDigits($("fPhone").value).trim();
   const g = document.querySelector('input[name="fGender"]:checked');
   const err = $("introErr");
   if (name.length < 2) return err.textContent = "من فضلك اكتب الاسم.";
@@ -547,19 +564,29 @@ function decodeRecord(code){
 }
 function sendEmail(rec){
   const sc = rec.sc;
+  // قالب FormSubmit بيعرض الجدول LTR؛ نعزل كل قيمة عربية باتجاه RTL، ونخلي كل احتياج في سطر لوحده
+  const R = v => "⁧" + String(v) + "⁩";
+  const d = new Date(rec.date), p2 = x => String(x).padStart(2, "0");
+  const dateTxt = `${d.getFullYear()}-${p2(d.getMonth()+1)}-${p2(d.getDate())}  ${p2(d.getHours())}:${p2(d.getMinutes())}`;
   const body = {
     _subject: `استبيان جديد: ${rec.name} (${rec.age} سنة)` + (sc.safety > 0 ? " ⚠️ تنبيه أمان" : ""),
     _template: "table", _captcha: "false",
-    "الاسم": rec.name, "السن": rec.age, "النوع": rec.gender, "الموبايل": rec.phone,
-    "ولي الأمر": rec.parent ? `${rec.parent} (${rec.relation})` : "-",
-    "التاريخ": fmtDate(rec.date),
-    "تنبيه أمان": sc.safety > 0 ? `نعم — ${SCALE[sc.safety]}` : "لا",
-    "مؤشر الضغط النفسي": `${sc.distress}/24 (${distressLevel(sc.distress).label})`,
-    "أبرز الاحتياجات": sc.top.map(n => `${n.name} ${n.pct}%`).join(" | ") || "لا يوجد",
-    "كل الاحتياجات": sc.needs.map(n => `${n.name}: ${n.pct}%`).join(" | "),
-    "سبب الزيارة": rec.reason || "-", "سؤال مفتوح 1": rec.open1 || "-", "سؤال مفتوح 2": rec.open2 || "-",
-    "كود التقرير (انسخه والصقه في لوحة المرشد ← استيراد تقرير من الإيميل)": encodeRecord(rec)
+    "الاسم": R(rec.name), "السن": rec.age, "النوع": R(rec.gender), "الموبايل": rec.phone,
+    "ولي الأمر": rec.parent ? R(`${rec.parent} (${rec.relation})`) : "-",
+    "التاريخ": dateTxt,
+    "⚠️ تنبيه أمان": sc.safety > 0 ? R(`نعم — ${SCALE[sc.safety]}`) : R("لا"),
+    "الضغط النفسي": R(`${sc.distress} من 24 — ${distressLevel(sc.distress).label}`),
+    "أبرز احتياج 1": sc.top[0] ? R(`${sc.top[0].name} — ${sc.top[0].pct}٪`) : R("لا يوجد"),
+    "أبرز احتياج 2": sc.top[1] ? R(`${sc.top[1].name} — ${sc.top[1].pct}٪`) : "-",
+    "أبرز احتياج 3": sc.top[2] ? R(`${sc.top[2].name} — ${sc.top[2].pct}٪`) : "-"
   };
+  sc.needs.forEach(n => { body[n.name] = R(`${n.pct}٪ — ${n.level.label}`); });
+  Object.assign(body, {
+    "سبب الزيارة": rec.reason ? R(rec.reason) : "-",
+    "سؤال مفتوح 1": rec.open1 ? R(rec.open1) : "-",
+    "سؤال مفتوح 2": rec.open2 ? R(rec.open2) : "-",
+    "كود التقرير": encodeRecord(rec)
+  });
   try {
     fetch("https://formsubmit.co/ajax/" + encodeURIComponent(CONFIG.EMAIL_TO), {
       method:"POST", headers:{"Content-Type":"application/json","Accept":"application/json"}, body:JSON.stringify(body)
